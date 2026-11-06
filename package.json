@@ -1,0 +1,26 @@
+{
+  "name": "grove",
+  "version": "0.1.0",
+  "description": "Terminal dashboard for running Claude Code sessions in git worktrees",
+  "type": "module",
+  "bin": {
+    "grove": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "ink": "^8.0.0",
+    "react": "^19.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "@types/react": "^19.3.0",
+    "typescript": "^7.0.2"
+  }
+}
