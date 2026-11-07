@@ -7,6 +7,7 @@ import {
   mergeSession,
   openPullRequest,
   openSession,
+  refreshStates,
   removeSession,
   showDiff,
   type ClaudeState,
@@ -29,6 +30,8 @@ const STATE_STYLE: Record<ClaudeState | "stopped", { label: string; color: strin
   unknown: { label: "starting", color: "gray", icon: "○" },
   stopped: { label: "stopped", color: "gray", icon: "·" },
 };
+
+const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 function ago(d: Date | null): string {
   if (!d) return "";
@@ -57,6 +60,7 @@ export function App({ repo }: { repo: Repo }) {
   const [hint, setHint] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [exiting, setExiting] = useState(false);
+  const [frame, setFrame] = useState(0);
   const refreshing = useRef(false);
   const nextLogId = useRef(0);
 
@@ -84,6 +88,21 @@ export function App({ repo }: { repo: Repo }) {
     const timer = setInterval(() => void refresh(), 2000);
     return () => clearInterval(timer);
   }, [refresh]);
+
+  // Hook state changes with every tool call, so poll it faster than the git stats.
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (!refreshing.current) setSessions((ss) => refreshStates(repo, ss));
+    }, 400);
+    return () => clearInterval(timer);
+  }, [repo]);
+
+  const anyBusy = sessions.some((s) => s.running && s.state === "busy");
+  useEffect(() => {
+    if (!anyBusy) return;
+    const timer = setInterval(() => setFrame((f) => (f + 1) % SPINNER.length), 80);
+    return () => clearInterval(timer);
+  }, [anyBusy]);
 
   // Clear the live view before exiting so only the log stays in scrollback.
   useEffect(() => {
@@ -200,28 +219,39 @@ export function App({ repo }: { repo: Repo }) {
               sessions.map((s, i) => {
                 const style = STATE_STYLE[s.running ? s.state : "stopped"];
                 const isSel = i === selected;
+                const icon = s.running && s.state === "busy" ? SPINNER[frame] : style.icon;
+                const activity = s.running && (s.state === "busy" || s.state === "waiting") ? s.activity : null;
                 return (
-                  <Box key={s.path}>
-                    <Text color="green">{isSel ? "❯ " : "  "}</Text>
-                    <Box width={nameWidth}>
-                      <Text bold={isSel} dimColor={!isSel} wrap="truncate-end">{s.id}</Text>
-                    </Box>
-                    <Box width={13}>
-                      <Text color={style.color}>{style.icon} {style.label}</Text>
-                    </Box>
-                    <Box width={5}>
-                      <Text dimColor>{s.running ? ago(s.stateSince) : ""}</Text>
-                    </Box>
-                    <Box width={18}>
-                      <Text>
-                        <Text color="green">+{s.added}</Text> <Text color="red">-{s.deleted}</Text>
-                        {s.untracked > 0 && <Text dimColor> {s.untracked} new</Text>}
+                  <Box key={s.path} flexDirection="column">
+                    <Box>
+                      <Text color="green">{isSel ? "❯ " : "  "}</Text>
+                      <Box width={nameWidth}>
+                        <Text bold={isSel} dimColor={!isSel} wrap="truncate-end">{s.id}</Text>
+                      </Box>
+                      <Box width={13}>
+                        <Text color={style.color}>{icon} {style.label}</Text>
+                      </Box>
+                      <Box width={5}>
+                        <Text dimColor>{s.running ? ago(s.stateSince) : ""}</Text>
+                      </Box>
+                      <Box width={18}>
+                        <Text>
+                          <Text color="green">+{s.added}</Text> <Text color="red">-{s.deleted}</Text>
+                          {s.untracked > 0 && <Text dimColor> {s.untracked} new</Text>}
+                        </Text>
+                      </Box>
+                      <Text dimColor>
+                        {s.ahead} commit{s.ahead === 1 ? "" : "s"}
+                        {s.dirty ? " · uncommitted" : ""}
                       </Text>
                     </Box>
-                    <Text dimColor>
-                      {s.ahead} commit{s.ahead === 1 ? "" : "s"}
-                      {s.dirty ? " · uncommitted" : ""}
-                    </Text>
+                    {activity && (
+                      <Box paddingLeft={4}>
+                        <Text color={s.state === "waiting" ? "magenta" : undefined} dimColor={s.state !== "waiting"} wrap="truncate-end">
+                          └ {activity}
+                        </Text>
+                      </Box>
+                    )}
                   </Box>
                 );
               })

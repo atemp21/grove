@@ -23,7 +23,8 @@ grove
 - Worktrees live in `~/.grove/worktrees/<repo>/<branch>`.
 - Each Claude session runs in a window of the tmux session `grove-<repo>`.
 - Claude is launched with `--settings ~/.grove/claude-settings.json`, which adds hooks that write the session's
-  state (working / needs you / idle) to `~/.grove/status/`. Your own settings are untouched.
+  state (working / needs you / idle) and current activity (the file being edited, the command running, the
+  permission being asked for) to `~/.grove/status/`. Your own settings are untouched.
 
 ## Config
 

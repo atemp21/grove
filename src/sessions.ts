@@ -1,5 +1,5 @@
-import { copyFileSync, existsSync, mkdirSync, rmSync, statSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, relative } from "node:path";
 import { run, runInteractive, tryRun, pressEnterToContinue } from "./exec.js";
 import { GROVE_HOME, copyPatterns, setupCommand, type Repo } from "./repo.js";
 import * as tmux from "./tmux.js";
@@ -14,6 +14,8 @@ export type Session = {
   running: boolean;
   state: ClaudeState;
   stateSince: Date | null;
+  /** What Claude is doing right now, e.g. "editing src/App.tsx". */
+  activity: string | null;
   added: number;
   deleted: number;
   untracked: number;
@@ -30,7 +32,8 @@ const statusFile = (repo: Repo, id: string) => join(STATUS_DIR, `${slug(repo.nam
 
 /**
  * Hooks that make each Claude session report its state to the file named by
- * $GROVE_STATUS_FILE. Loaded with `claude --settings`, so the user's own
+ * $GROVE_STATUS_FILE: the state on the first line, then the hook's JSON payload,
+ * written atomically. Loaded with `claude --settings`, so the user's own
  * settings are left alone and sessions started outside grove are unaffected.
  */
 export function writeClaudeSettings(): void {
@@ -40,7 +43,7 @@ export function writeClaudeSettings(): void {
       hooks: [
         {
           type: "command",
-          command: `[ -n "$GROVE_STATUS_FILE" ] && echo ${state} > "$GROVE_STATUS_FILE"; exit 0`,
+          command: `[ -n "$GROVE_STATUS_FILE" ] && { echo ${state}; cat; } > "$GROVE_STATUS_FILE.tmp" && mv "$GROVE_STATUS_FILE.tmp" "$GROVE_STATUS_FILE"; exit 0`,
         },
       ],
     },
@@ -75,11 +78,103 @@ async function listWorktrees(repo: Repo): Promise<Worktree[]> {
 
 const idFor = (wt: Worktree) => slug(wt.branch ?? basename(wt.path));
 
-function readState(repo: Repo, id: string): { state: ClaudeState; since: Date | null } {
+/** Read the start of a file; hook payloads with large tool inputs can be big. */
+function readHead(file: string, bytes = 16384): string {
+  const fd = openSync(file, "r");
+  try {
+    const buf = Buffer.alloc(bytes);
+    return buf.toString("utf8", 0, readSync(fd, buf, 0, bytes, 0));
+  } finally {
+    closeSync(fd);
+  }
+}
+
+type HookPayload = {
+  hook_event_name?: string;
+  cwd?: string;
+  tool_name?: string;
+  tool_input?: Record<string, unknown>;
+  prompt?: string;
+  message?: string;
+};
+
+function parsePayload(text: string): HookPayload {
+  try {
+    return JSON.parse(text) as HookPayload;
+  } catch {
+    // Truncated by readHead: pull out the fields that matter by hand.
+    const field = (name: string) => {
+      const raw = text.match(new RegExp(`"${name}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"`))?.[1];
+      return raw === undefined ? undefined : (JSON.parse(`"${raw}"`) as string);
+    };
+    const input: Record<string, unknown> = {};
+    for (const k of ["file_path", "command", "description"]) if (field(k)) input[k] = field(k);
+    return { cwd: field("cwd"), tool_name: field("tool_name"), tool_input: input };
+  }
+}
+
+const oneLine = (s: string) => s.replace(/\s+/g, " ").trim();
+
+/** Describe a hook payload in a few words, or null if there's nothing to say. */
+function describe(state: ClaudeState, p: HookPayload): string | null {
+  if (state === "waiting") return p.message ? oneLine(p.message) : null;
+  if (state !== "busy") return null;
+  if (p.prompt !== undefined) return `“${oneLine(p.prompt)}”`;
+  const tool = p.tool_name;
+  if (!tool) return null;
+  const input = p.tool_input ?? {};
+  const str = (k: string) => (typeof input[k] === "string" ? (input[k] as string) : "");
+  const path = (k: string) => {
+    const f = str(k);
+    const rel = f && p.cwd ? relative(p.cwd, f) : f;
+    return rel.startsWith("..") ? f : rel;
+  };
+  switch (tool) {
+    case "Read":
+      return `reading ${path("file_path")}`;
+    case "Edit":
+    case "MultiEdit":
+      return `editing ${path("file_path")}`;
+    case "Write":
+      return `writing ${path("file_path")}`;
+    case "NotebookEdit":
+      return `editing ${path("notebook_path")}`;
+    case "Bash":
+      return `$ ${oneLine(str("command"))}`;
+    case "Grep":
+      return `searching for ${str("pattern")}`;
+    case "Glob":
+      return `finding ${str("pattern")}`;
+    case "WebFetch":
+      return `fetching ${str("url").replace(/^https?:\/\//, "")}`;
+    case "WebSearch":
+      return `searching the web for ${str("query")}`;
+    case "Task":
+    case "Agent":
+      return `agent: ${str("description")}`;
+    case "TodoWrite":
+      return "planning";
+  }
+  const mcp = tool.match(/^mcp__(.+?)__(.+)$/);
+  return mcp ? `${mcp[1]}: ${mcp[2]}` : tool;
+}
+
+function readState(repo: Repo, id: string): { state: ClaudeState; since: Date | null; activity: string | null } {
   const file = statusFile(repo, id);
-  if (!existsSync(file)) return { state: "unknown", since: null };
-  const state = readFileSync(file, "utf8").trim() as ClaudeState;
-  return { state, since: statSync(file).mtime };
+  if (!existsSync(file)) return { state: "unknown", since: null, activity: null };
+  const text = readHead(file);
+  const newline = text.indexOf("\n");
+  const state = (newline < 0 ? text : text.slice(0, newline)).trim() as ClaudeState;
+  const payload = newline < 0 ? {} : parsePayload(text.slice(newline + 1));
+  return { state, since: statSync(file).mtime, activity: describe(state, payload) };
+}
+
+/** Re-read just the hook state of each session; cheap enough to poll often. */
+export function refreshStates(repo: Repo, sessions: Session[]): Session[] {
+  return sessions.map((s) => {
+    const { state, since, activity } = readState(repo, s.id);
+    return { ...s, state, stateSince: since, activity };
+  });
 }
 
 async function changeStats(repo: Repo, path: string) {
@@ -104,7 +199,7 @@ export async function listSessions(repo: Repo): Promise<Session[]> {
   return Promise.all(
     trees.map(async (wt) => {
       const id = idFor(wt);
-      const { state, since } = readState(repo, id);
+      const { state, since, activity } = readState(repo, id);
       return {
         id,
         path: wt.path,
@@ -112,6 +207,7 @@ export async function listSessions(repo: Repo): Promise<Session[]> {
         running: windows.has(id),
         state,
         stateSince: since,
+        activity,
         ...(await changeStats(repo, wt.path)),
       };
     }),
