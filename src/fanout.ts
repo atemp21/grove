@@ -9,7 +9,7 @@ export type Fanout = { id: string; task: string; members: string[]; created: str
 
 export type TestResult = { status: "running" } | { status: "pass" | "fail"; ms: number; tail: string };
 
-const fanoutsFile = (repo: Repo) => join(GROVE_HOME, "fanouts", `${slug(repo.name)}.json`);
+const fanoutsFile = (repo: Repo) => join(GROVE_HOME, "fanouts", `${slug(repo.key)}.json`);
 
 export function loadFanouts(repo: Repo): Fanout[] {
   const file = fanoutsFile(repo);
@@ -70,7 +70,7 @@ export async function keepCandidate(repo: Repo, fanout: Fanout, winner: Session,
 /** Run the repo's test command in a candidate's worktree. */
 export async function runTests(repo: Repo, s: Session): Promise<TestResult> {
   const cmd = testCommand(repo);
-  if (!cmd) throw new Error('no test command: add "test" to .grove.json');
+  if (!cmd) throw new Error(repo.trusted ? 'no test command: add "test" to .grove.json' : "tests are off: restart grove and trust this repo's commands");
   const started = Date.now();
   const lastLine = (out: string) => out.trim().split("\n").at(-1) ?? "";
   try {

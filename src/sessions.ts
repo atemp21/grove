@@ -1,7 +1,7 @@
 import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative } from "node:path";
 import { run, runInteractive, tryRun, pressEnterToContinue } from "./exec.js";
-import { GROVE_HOME, copyPatterns, setupCommand, type Repo } from "./repo.js";
+import { GROVE_HOME, claudeArgs, copyPatterns, setupCommand, type Repo } from "./repo.js";
 import * as tmux from "./tmux.js";
 
 /** What Claude is doing, as last reported by its hooks. */
@@ -32,7 +32,7 @@ const SETTINGS_PATH = join(GROVE_HOME, "claude-settings.json");
 
 export const slug = (s: string) => s.replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
 const shq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
-const statusFile = (repo: Repo, id: string) => join(STATUS_DIR, `${slug(repo.name)}__${id}`);
+const statusFile = (repo: Repo, id: string) => join(STATUS_DIR, `${slug(repo.key)}__${id}`);
 
 /**
  * Hooks that make each Claude session report its state to the file named by
@@ -118,7 +118,8 @@ function parsePayload(text: string): HookPayload {
   }
 }
 
-const oneLine = (s: string) => s.replace(/\s+/g, " ").trim();
+// Control characters are dropped too: Ink passes OSC sequences through, which could set the clipboard or title.
+const oneLine = (s: string) => s.replace(/\s+/g, " ").replace(/\p{Cc}/gu, "").trim();
 
 /** Describe a hook payload in a few words, or null if there's nothing to say. */
 function describe(state: ClaudeState, p: HookPayload): string | null {
@@ -171,7 +172,8 @@ function readState(repo: Repo, id: string): { state: ClaudeState; since: Date | 
   const newline = text.indexOf("\n");
   const state = (newline < 0 ? text : text.slice(0, newline)).trim() as ClaudeState;
   const payload = newline < 0 ? {} : parsePayload(text.slice(newline + 1));
-  return { state, since: statSync(file).mtime, activity: describe(state, payload) };
+  const activity = describe(state, payload);
+  return { state, since: statSync(file).mtime, activity: activity && oneLine(activity) };
 }
 
 /** Re-read just the hook state of each session; cheap enough to poll often. */
@@ -224,7 +226,7 @@ export async function listSessions(repo: Repo): Promise<Session[]> {
 }
 
 async function startClaude(repo: Repo, id: string, cwd: string, firstRun: boolean, prompt?: string): Promise<void> {
-  const claude = ["claude", "--settings", shq(SETTINGS_PATH), ...(repo.config.claudeArgs ?? []).map(shq)];
+  const claude = ["claude", "--settings", shq(SETTINGS_PATH), ...claudeArgs(repo).map(shq)];
   // Resume the previous conversation if this worktree has had one.
   const resume = existsSync(statusFile(repo, id)) ? " --continue" : "";
   const setup = firstRun ? setupCommand(repo) : undefined;

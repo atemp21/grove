@@ -19,7 +19,7 @@ export type PreviewResult = { included: string[]; conflicting: { id: string; fil
 
 export const previewPath = (repo: Repo) => join(repo.worktreesDir, PREVIEW_ID);
 export const previewExists = (repo: Repo) => existsSync(previewPath(repo));
-const picksFile = (repo: Repo) => join(GROVE_HOME, "preview", `${slug(repo.name)}.json`);
+const picksFile = (repo: Repo) => join(GROVE_HOME, "preview", `${slug(repo.key)}.json`);
 
 export function loadPicks(repo: Repo): PreviewPicks {
   const file = picksFile(repo);

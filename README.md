@@ -68,6 +68,11 @@ Defaults: `base` is `origin/HEAD` or the current branch, `copy` copies gitignore
 `.claude/settings.local.json`, `setup` is guessed from the lockfile (pnpm/yarn/bun/npm/uv), and `test`
 defaults to the `package.json` test script.
 
+`setup`, `test` and `claudeArgs` let a repo run commands on your machine, and so do the guessed install and
+test commands (they run the repo's own scripts). The first time grove opens a repo with any of them, it shows
+them and asks before running them. It asks again if they change. Approvals are kept in
+`~/.grove/trusted.json`. If you say no, grove still works, but without setup, tests or extra `claude` args.
+
 ## Fan-out
 
 `f` asks for a task and starts Claude on it in several fresh worktrees (`<task>-a`, `-b`, …), grouped under
