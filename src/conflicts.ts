@@ -8,7 +8,7 @@ import type { Session } from "./sessions.js";
 /** Another branch this session's work would conflict with, and the files involved. */
 export type Conflict = { with: string; files: string[] };
 
-type Snapshot = { commit: string; key: string };
+export type Snapshot = { commit: string; key: string };
 
 // Snapshot commits by HEAD + tree, so an unchanged worktree isn't re-committed every poll.
 const snapshotCache = new Map<string, string>();
@@ -67,42 +67,47 @@ async function conflictingFiles(repo: Repo, a: Snapshot, b: Snapshot): Promise<s
 
 const hasWork = (s: Session) => s.ahead > 0 || s.added + s.deleted + s.untracked > 0;
 
+/** Snapshot every worktree that has work in it, by session id. Worktrees that fail to snapshot are left out. */
+export async function snapshotAll(sessions: Session[]): Promise<Map<string, Snapshot>> {
+  const active = sessions.filter(hasWork);
+  const snaps = await Promise.all(active.map((s) => snapshot(s.path).catch(() => null)));
+  return new Map(active.flatMap((s, i) => (snaps[i] ? [[s.id, snaps[i]] as const] : [])));
+}
+
 /**
  * Predict merge conflicts between every pair of worktrees, and between each
- * worktree and the base branch, using their current on-disk state.
+ * worktree and the base branch, using their snapshots.
  */
-export async function findConflicts(repo: Repo, sessions: Session[]): Promise<Map<string, Conflict[]>> {
-  const active = sessions.filter(hasWork);
+export async function findConflicts(
+  repo: Repo,
+  sessions: Session[],
+  snaps: Map<string, Snapshot>,
+): Promise<Map<string, Conflict[]>> {
+  const active = sessions.filter((s) => snaps.has(s.id));
   const result = new Map<string, Conflict[]>();
   if (active.length === 0) return result;
 
-  const [snaps, baseCommit] = await Promise.all([
-    Promise.all(active.map((s) => snapshot(s.path).catch(() => null))),
-    run("git", ["rev-parse", repo.base], repo.root),
-  ]);
+  const baseCommit = await run("git", ["rev-parse", repo.base], repo.root);
   const base: Snapshot = { commit: baseCommit, key: baseCommit };
   const add = (id: string, c: Conflict) => result.set(id, [...(result.get(id) ?? []), c]);
 
   const checks: Promise<void>[] = [];
   active.forEach((s, i) => {
-    const snap = snaps[i];
-    if (!snap) return;
+    const snap = snaps.get(s.id)!;
     checks.push(
       conflictingFiles(repo, snap, base).then((files) => {
         if (files.length) add(s.id, { with: repo.base, files });
       }),
     );
-    active.slice(i + 1).forEach((other, j) => {
-      const otherSnap = snaps[i + 1 + j];
-      if (!otherSnap) return;
+    for (const other of active.slice(i + 1)) {
       checks.push(
-        conflictingFiles(repo, snap, otherSnap).then((files) => {
+        conflictingFiles(repo, snap, snaps.get(other.id)!).then((files) => {
           if (!files.length) return;
           add(s.id, { with: other.id, files });
           add(other.id, { with: s.id, files });
         }),
       );
-    });
+    }
   });
   await Promise.all(checks.map((c) => c.catch(() => {})));
   // Checks finish in any order; keep the list stable between polls, base branch first.

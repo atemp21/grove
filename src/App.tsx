@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Box, Static, Text, useApp, useInput, useWindowSize } from "ink";
-import { findConflicts, type Conflict } from "./conflicts.js";
+import { findConflicts, snapshotAll, type Conflict } from "./conflicts.js";
 import {
   keepCandidate,
   liveFanouts,
@@ -10,6 +10,18 @@ import {
   type Fanout,
   type TestResult,
 } from "./fanout.js";
+import {
+  createPreview,
+  loadPicks,
+  wanted,
+  openPreview,
+  previewExists,
+  previewPath,
+  removePreview,
+  togglePick,
+  updatePreview,
+  type PreviewResult,
+} from "./preview.js";
 import type { Repo } from "./repo.js";
 import {
   createSession,
@@ -85,6 +97,9 @@ export function App({ repo }: { repo: Repo }) {
   const [conflicts, setConflicts] = useState<Map<string, Conflict[]>>(new Map());
   const [fanouts, setFanouts] = useState<Fanout[]>(() => loadFanouts(repo));
   const [tests, setTests] = useState<Map<string, TestResult>>(new Map());
+  const [hasPreview, setHasPreview] = useState(() => previewExists(repo));
+  const [picks, setPicks] = useState(() => loadPicks(repo));
+  const [preview, setPreview] = useState<PreviewResult | null>(null);
   const refreshing = useRef(false);
   const checkingConflicts = useRef(false);
   const nextLogId = useRef(0);
@@ -99,13 +114,27 @@ export function App({ repo }: { repo: Repo }) {
     try {
       const next = await listSessions(repo);
       setSessions(next);
-      setFanouts(loadFanouts(repo));
+      const nextFanouts = loadFanouts(repo);
+      setFanouts(nextFanouts);
       setSelected((i) => Math.min(i, Math.max(0, next.length - 1)));
+      const withPreview = previewExists(repo);
+      setHasPreview(withPreview);
       setLoaded(true);
       if (!checkingConflicts.current) {
         checkingConflicts.current = true;
-        findConflicts(repo, next)
-          .then(setConflicts, () => {})
+        // One snapshot per worktree feeds both the conflict check and the preview.
+        snapshotAll(next)
+          .then((snaps) =>
+            Promise.all([
+              findConflicts(repo, next, snaps).then(setConflicts),
+              withPreview &&
+                updatePreview(repo, next, snaps, loadPicks(repo), liveFanouts(nextFanouts, next)).then(
+                  setPreview,
+                  (e) => setHint(`preview: ${(e as Error).message}`),
+                ),
+            ]),
+          )
+          .catch(() => {})
           .finally(() => (checkingConflicts.current = false));
       }
     } catch (e) {
@@ -282,6 +311,28 @@ export function App({ repo }: { repo: Repo }) {
       if (input === "n") return setMode({ kind: "new", text: "" });
       if (input === "f") return setMode({ kind: "fanout", text: "", count: 3 });
       if (input === "r") return void refresh();
+      if (input === "v") {
+        if (!hasPreview) return void act(() => createPreview(repo, sessions, groups));
+        return void act(async () => {
+          const how = { value: "blocked" as "blocked" | "switched" };
+          await suspendTerminal(async () => {
+            how.value = await openPreview(repo);
+          });
+          if (how.value === "switched") setHint("switched to the preview; switch back to this tmux window to return");
+        });
+      }
+      if (input === "V") {
+        if (!hasPreview) return setHint("no preview · press v to create one");
+        return setMode({
+          kind: "confirm",
+          prompt: `Remove the preview at ${previewPath(repo)}? Your worktrees are untouched.`,
+          action: () => removePreview(repo),
+        });
+      }
+      if (input === " " && current) {
+        // The list shows the new pick at once; the preview's files follow on the next poll.
+        return setPicks(togglePick(repo, current.id, groupOf.get(current.id)));
+      }
       if (input === "c") {
         const g = current && groupOf.get(current.id);
         if (!g) return setHint("not part of a fan-out · press f to start one");
@@ -323,6 +374,9 @@ export function App({ repo }: { repo: Repo }) {
   });
 
   const conflicted = sessions.filter((s) => clashesOf(s.id).length > 0).length;
+  const previewConflicts = new Map(preview?.conflicting.map((c) => [c.id, c.files]));
+  const inPreview = (s: Session) =>
+    hasPreview && wanted(picks, s.id, groupOf.get(s.id)) && !previewConflicts.has(s.id);
   const nameWidth = Math.max(12, Math.min(40, ...sessions.map((s) => s.id.length + 2)));
   const stateCell = (s: Session) => {
     const style = STATE_STYLE[s.running ? s.state : "stopped"];
@@ -336,6 +390,7 @@ export function App({ repo }: { repo: Repo }) {
     const clashes = clashesOf(s.id);
     const activity = activityOf(s);
     const g = groupOf.get(s.id);
+    const leftOut = hasPreview && wanted(picks, s.id, g) ? previewConflicts.get(s.id) : undefined;
     return (
       <Box key={s.path} flexDirection="column">
         {g && g.members[0] === s.id && (
@@ -364,6 +419,7 @@ export function App({ repo }: { repo: Repo }) {
             {s.ahead} commit{s.ahead === 1 ? "" : "s"}
             {s.dirty ? " · uncommitted" : ""}
           </Text>
+          {inPreview(s) && <Text color="cyan"> ◧ preview</Text>}
         </Box>
         {activity && (
           <Box paddingLeft={4}>
@@ -380,6 +436,14 @@ export function App({ repo }: { repo: Repo }) {
             </Text>
           </Box>
         ))}
+        {leftOut && (
+          <Box paddingLeft={4}>
+            <Text color="yellow" wrap="truncate-end">
+              ⊘ left out of preview: conflicts in {leftOut.slice(0, 2).join(", ")}
+              {leftOut.length > 2 && <Text dimColor> +{leftOut.length - 2} more</Text>}
+            </Text>
+          </Box>
+        )}
       </Box>
     );
   });
@@ -484,6 +548,12 @@ export function App({ repo }: { repo: Repo }) {
               <Text bold color="green">grove</Text>
               <Text dimColor> {repo.name} · base {repo.base}</Text>
               {conflicted > 0 && <Text color="red">  ⚠ {conflicted} conflicting</Text>}
+              {hasPreview && (
+                <Text color="cyan">
+                  {"  "}◧ preview {sessions.filter(inPreview).length} in
+                  {previewConflicts.size > 0 && <Text color="yellow"> · {previewConflicts.size} left out</Text>}
+                </Text>
+              )}
             </Text>
 
             {!loaded ? (
@@ -531,7 +601,9 @@ export function App({ repo }: { repo: Repo }) {
               <Text wrap="truncate-end">
                 <Key k="n" label="new" />  <Key k="f" label="fan out" />  <Key k="enter" label="attach" />{"  "}
                 <Key k="d" label="diff" />  <Key k="m" label="merge" />  <Key k="p" label="PR" />{"  "}
-                <Key k="x" label="remove" />  <Key k="q" label="quit" />
+                <Key k="x" label="remove" />  <Key k="v" label="preview" />{"  "}
+                {hasPreview && <><Key k="space" label="in/out" />{"  "}<Key k="V" label="drop preview" />{"  "}</>}
+                <Key k="q" label="quit" />
                 {!process.env.TMUX && <Text dimColor>  · ctrl-b d returns from a session</Text>}
               </Text>
             )}

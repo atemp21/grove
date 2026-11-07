@@ -17,6 +17,9 @@ grove
 | `m` | Merge the branch into the base in your main checkout |
 | `p` | Push and open a PR with `gh pr create --fill` |
 | `x` / `X` | Remove the worktree / force-remove, discarding uncommitted changes |
+| `v` | Create the integration preview, or open a shell in it |
+| `space` | Put the selected worktree into the preview or take it out |
+| `V` | Remove the preview |
 | `j`/`k`, arrows | Move |
 | `t` / `w` | In compare: run the tests in every candidate / keep the selected candidate and delete the others |
 | `q` | Quit (sessions keep running in tmux) |
@@ -31,6 +34,21 @@ grove
 - Every couple of seconds grove snapshots each worktree as it is on disk (uncommitted and untracked files
   included, using a throwaway index) and runs `git merge-tree` on each pair, and on each worktree against the
   base, to flag merge conflicts before anyone merges. Worktrees, indexes and refs are never touched.
+
+## Preview
+
+`v` creates `~/.grove/worktrees/<repo>/_preview`, a checkout of everyone's work merged together, uncommitted
+and untracked files included, and opens a shell there that first runs `setup`. Run your dev server in it to try
+all the branches at once. Every couple of seconds grove merges the base and each worktree in the preview, in
+name order, and writes the result into it with `git read-tree -u --reset`. Only changed files are rewritten, so
+hot reload picks them up. A worktree that would conflict with the ones merged before it is left out and marked
+`⊘` in the list, so the preview never has conflict markers. HEAD stays on the base, so `git diff --cached` in
+the preview shows the combined change.
+
+Every worktree is in the preview by default; `space` takes it out. Candidates of a fan-out are out by default,
+and choosing one with `space` drops its siblings. The preview is read-only: edits made in it are overwritten on
+the next update (gitignored files like `node_modules` and build output are left alone). Make changes in a
+worktree instead.
 
 ## Config
 

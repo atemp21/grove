@@ -26,6 +26,8 @@ export type Session = {
 };
 
 const STATUS_DIR = join(GROVE_HOME, "status");
+/** Name of the integration preview's worktree directory and tmux window; never a session id. */
+export const PREVIEW_ID = "_preview";
 const SETTINGS_PATH = join(GROVE_HOME, "claude-settings.json");
 
 export const slug = (s: string) => s.replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
@@ -69,9 +71,10 @@ type Worktree = { path: string; branch: string | null };
 async function listWorktrees(repo: Repo): Promise<Worktree[]> {
   const out = await run("git", ["worktree", "list", "--porcelain"], repo.root);
   const trees: Worktree[] = [];
+  const preview = join(repo.worktreesDir, PREVIEW_ID);
   for (const block of out.split("\n\n")) {
     const path = block.match(/^worktree (.+)$/m)?.[1];
-    if (!path || path === repo.root || /^prunable/m.test(block)) continue;
+    if (!path || path === repo.root || path === preview || /^prunable/m.test(block)) continue;
     const branch = block.match(/^branch refs\/heads\/(.+)$/m)?.[1] ?? null;
     trees.push({ path, branch });
   }
@@ -236,6 +239,20 @@ async function startClaude(repo: Repo, id: string, cwd: string, firstRun: boolea
   });
 }
 
+/** Copy the gitignored files named by the `copy` config (env files by default) from the main checkout. */
+export async function copyIgnoredFiles(repo: Repo, path: string): Promise<void> {
+  const toCopy = await tryRun(
+    "git",
+    ["ls-files", "--others", "--ignored", "--exclude-standard", "--", ...copyPatterns(repo)],
+    repo.root,
+  );
+  for (const file of toCopy ? toCopy.split("\n") : []) {
+    if (file.includes("node_modules/")) continue;
+    mkdirSync(dirname(join(path, file)), { recursive: true });
+    copyFileSync(join(repo.root, file), join(path, file));
+  }
+}
+
 /**
  * Create a worktree for `branch` (new or existing), copy env files, and start
  * Claude in it, optionally with `prompt` as its first message.
@@ -243,6 +260,7 @@ async function startClaude(repo: Repo, id: string, cwd: string, firstRun: boolea
 export async function createSession(repo: Repo, branch: string, prompt?: string): Promise<string> {
   const id = slug(branch);
   if (!id) throw new Error("invalid branch name");
+  if (id === PREVIEW_ID) throw new Error(`${PREVIEW_ID} is reserved for the preview`);
   const path = join(repo.worktreesDir, id);
   if (existsSync(path)) throw new Error(`${path} already exists`);
   mkdirSync(repo.worktreesDir, { recursive: true });
@@ -254,17 +272,7 @@ export async function createSession(repo: Repo, branch: string, prompt?: string)
     repo.root,
   );
 
-  const toCopy = await tryRun(
-    "git",
-    ["ls-files", "--others", "--ignored", "--exclude-standard", "--", ...copyPatterns(repo)],
-    repo.root,
-  );
-  for (const file of toCopy ? toCopy.split("\n") : []) {
-    if (file.includes("node_modules/")) continue;
-    mkdirSync(dirname(join(path, file)), { recursive: true });
-    copyFileSync(join(repo.root, file), join(path, file));
-  }
-
+  await copyIgnoredFiles(repo, path);
   rmSync(statusFile(repo, id), { force: true });
   await startClaude(repo, id, path, true, prompt);
   return id;
