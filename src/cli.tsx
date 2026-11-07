@@ -32,5 +32,5 @@ try {
 }
 
 writeClaudeSettings();
-const app = render(<App repo={repo} />, { alternateScreen: true });
+const app = render(<App repo={repo} />);
 await app.waitUntilExit();

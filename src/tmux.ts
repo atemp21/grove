@@ -38,5 +38,7 @@ export async function attach(session: string, window: string): Promise<"blocked"
     return "switched";
   }
   runInteractive("tmux", ["attach-session", "-t", exact(session)]);
+  // Erase tmux's "[detached (from session ...)]" line so it doesn't pile up in the log.
+  process.stdout.write("\x1b[1A\x1b[2K");
   return "blocked";
 }
