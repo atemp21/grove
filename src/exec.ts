@@ -4,18 +4,22 @@ export class ExecError extends Error {
   constructor(
     message: string,
     readonly stderr: string,
+    readonly stdout = "",
+    readonly code: number | null = null,
   ) {
     super(message);
   }
 }
 
 /** Run a command and resolve with trimmed stdout. Rejects with stderr on non-zero exit. */
-export function run(cmd: string, args: string[], cwd?: string): Promise<string> {
+export function run(cmd: string, args: string[], cwd?: string, env?: Record<string, string>): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile(cmd, args, { cwd, maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
+    const opts = { cwd, maxBuffer: 64 * 1024 * 1024, env: env && { ...process.env, ...env } };
+    execFile(cmd, args, opts, (err, stdout, stderr) => {
       if (err) {
         const msg = stderr.trim() || err.message;
-        reject(new ExecError(`${cmd} ${args.join(" ")}: ${msg}`, stderr));
+        const code = typeof err.code === "number" ? err.code : null;
+        reject(new ExecError(`${cmd} ${args.join(" ")}: ${msg}`, stderr, stdout, code));
       } else {
         resolve(stdout.trimEnd());
       }

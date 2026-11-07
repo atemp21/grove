@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Box, Static, Text, useApp, useInput, useWindowSize } from "ink";
+import { findConflicts, type Conflict } from "./conflicts.js";
 import type { Repo } from "./repo.js";
 import {
   createSession,
@@ -61,7 +62,9 @@ export function App({ repo }: { repo: Repo }) {
   const [busy, setBusy] = useState(false);
   const [exiting, setExiting] = useState(false);
   const [frame, setFrame] = useState(0);
+  const [conflicts, setConflicts] = useState<Map<string, Conflict[]>>(new Map());
   const refreshing = useRef(false);
+  const checkingConflicts = useRef(false);
   const nextLogId = useRef(0);
 
   const print = useCallback((text: string, error?: boolean) => {
@@ -76,6 +79,12 @@ export function App({ repo }: { repo: Repo }) {
       setSessions(next);
       setSelected((i) => Math.min(i, Math.max(0, next.length - 1)));
       setLoaded(true);
+      if (!checkingConflicts.current) {
+        checkingConflicts.current = true;
+        findConflicts(repo, next)
+          .then(setConflicts, () => {})
+          .finally(() => (checkingConflicts.current = false));
+      }
     } catch (e) {
       setHint((e as Error).message);
     } finally {
@@ -190,6 +199,7 @@ export function App({ repo }: { repo: Repo }) {
     }
   });
 
+  const conflicted = sessions.filter((s) => conflicts.has(s.id)).length;
   const nameWidth = Math.max(12, Math.min(40, ...sessions.map((s) => s.id.length + 2)));
 
   return (
@@ -209,6 +219,7 @@ export function App({ repo }: { repo: Repo }) {
             <Text>
               <Text bold color="green">grove</Text>
               <Text dimColor> {repo.name} · base {repo.base}</Text>
+              {conflicted > 0 && <Text color="red">  ⚠ {conflicted} conflicting</Text>}
             </Text>
 
             {!loaded ? (
@@ -220,6 +231,7 @@ export function App({ repo }: { repo: Repo }) {
                 const style = STATE_STYLE[s.running ? s.state : "stopped"];
                 const isSel = i === selected;
                 const icon = s.running && s.state === "busy" ? SPINNER[frame] : style.icon;
+                const clashes = conflicts.get(s.id) ?? [];
                 const activity = s.running && (s.state === "busy" || s.state === "waiting") ? s.activity : null;
                 return (
                   <Box key={s.path} flexDirection="column">
@@ -252,6 +264,14 @@ export function App({ repo }: { repo: Repo }) {
                         </Text>
                       </Box>
                     )}
+                    {clashes.map((c) => (
+                      <Box key={c.with} paddingLeft={4}>
+                        <Text color="red" wrap="truncate-end">
+                          ⚠ conflicts with {c.with} in {c.files.slice(0, 2).join(", ")}
+                          {c.files.length > 2 && <Text dimColor> +{c.files.length - 2} more</Text>}
+                        </Text>
+                      </Box>
+                    ))}
                   </Box>
                 );
               })

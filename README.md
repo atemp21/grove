@@ -25,6 +25,9 @@ grove
 - Claude is launched with `--settings ~/.grove/claude-settings.json`, which adds hooks that write the session's
   state (working / needs you / idle) and current activity (the file being edited, the command running, the
   permission being asked for) to `~/.grove/status/`. Your own settings are untouched.
+- Every couple of seconds grove snapshots each worktree as it is on disk (uncommitted and untracked files
+  included, using a throwaway index) and runs `git merge-tree` on each pair, and on each worktree against the
+  base, to flag merge conflicts before anyone merges. Worktrees, indexes and refs are never touched.
 
 ## Config
 
