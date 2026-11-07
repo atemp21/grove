@@ -19,6 +19,8 @@ export type Session = {
   added: number;
   deleted: number;
   untracked: number;
+  /** Paths changed against the base, untracked files included. */
+  files: string[];
   ahead: number;
   dirty: boolean;
 };
@@ -26,7 +28,7 @@ export type Session = {
 const STATUS_DIR = join(GROVE_HOME, "status");
 const SETTINGS_PATH = join(GROVE_HOME, "claude-settings.json");
 
-const slug = (s: string) => s.replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
+export const slug = (s: string) => s.replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
 const shq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 const statusFile = (repo: Repo, id: string) => join(STATUS_DIR, `${slug(repo.name)}__${id}`);
 
@@ -179,16 +181,20 @@ export function refreshStates(repo: Repo, sessions: Session[]): Session[] {
 
 async function changeStats(repo: Repo, path: string) {
   const mergeBase = await tryRun("git", ["merge-base", repo.base, "HEAD"], path);
-  const [shortstat, untracked, ahead, status] = await Promise.all([
-    mergeBase ? tryRun("git", ["diff", "--shortstat", mergeBase], path) : null,
+  const [numstat, untracked, ahead, status] = await Promise.all([
+    mergeBase ? tryRun("git", ["diff", "--numstat", mergeBase], path) : null,
     tryRun("git", ["ls-files", "--others", "--exclude-standard"], path),
     tryRun("git", ["rev-list", "--count", `${repo.base}..HEAD`], path),
     tryRun("git", ["status", "--porcelain"], path),
   ]);
+  // Lines are "added<TAB>deleted<TAB>path", with "-" counts for binary files.
+  const rows = numstat ? numstat.split("\n").map((l) => l.split("\t")) : [];
+  const newFiles = untracked ? untracked.split("\n") : [];
   return {
-    added: Number(shortstat?.match(/(\d+) insertion/)?.[1] ?? 0),
-    deleted: Number(shortstat?.match(/(\d+) deletion/)?.[1] ?? 0),
-    untracked: untracked ? untracked.split("\n").length : 0,
+    added: rows.reduce((n, [a]) => n + (Number(a) || 0), 0),
+    deleted: rows.reduce((n, [, d]) => n + (Number(d) || 0), 0),
+    untracked: newFiles.length,
+    files: [...rows.map((r) => r.slice(2).join("\t")), ...newFiles],
     ahead: Number(ahead ?? 0),
     dirty: Boolean(status),
   };
@@ -214,12 +220,13 @@ export async function listSessions(repo: Repo): Promise<Session[]> {
   );
 }
 
-async function startClaude(repo: Repo, id: string, cwd: string, firstRun: boolean): Promise<void> {
+async function startClaude(repo: Repo, id: string, cwd: string, firstRun: boolean, prompt?: string): Promise<void> {
   const claude = ["claude", "--settings", shq(SETTINGS_PATH), ...(repo.config.claudeArgs ?? []).map(shq)];
   // Resume the previous conversation if this worktree has had one.
   const resume = existsSync(statusFile(repo, id)) ? " --continue" : "";
   const setup = firstRun ? setupCommand(repo) : undefined;
-  const command = [setup, `exec ${claude.join(" ")}${resume}`].filter(Boolean).join("; ");
+  const initial = prompt ? ` ${shq(prompt)}` : "";
+  const command = [setup, `exec ${claude.join(" ")}${resume}${initial}`].filter(Boolean).join("; ");
   await tmux.startWindow({
     session: repo.tmuxSession,
     window: id,
@@ -229,8 +236,11 @@ async function startClaude(repo: Repo, id: string, cwd: string, firstRun: boolea
   });
 }
 
-/** Create a worktree for `branch` (new or existing), copy env files, and start Claude in it. */
-export async function createSession(repo: Repo, branch: string): Promise<string> {
+/**
+ * Create a worktree for `branch` (new or existing), copy env files, and start
+ * Claude in it, optionally with `prompt` as its first message.
+ */
+export async function createSession(repo: Repo, branch: string, prompt?: string): Promise<string> {
   const id = slug(branch);
   if (!id) throw new Error("invalid branch name");
   const path = join(repo.worktreesDir, id);
@@ -256,7 +266,7 @@ export async function createSession(repo: Repo, branch: string): Promise<string>
   }
 
   rmSync(statusFile(repo, id), { force: true });
-  await startClaude(repo, id, path, true);
+  await startClaude(repo, id, path, true, prompt);
   return id;
 }
 
@@ -266,12 +276,13 @@ export async function openSession(repo: Repo, s: Session) {
   return tmux.attach(repo.tmuxSession, s.id);
 }
 
-export async function removeSession(repo: Repo, s: Session, force: boolean): Promise<string> {
+/** Remove a worktree. With `discardBranch`, its branch is deleted even if unmerged. */
+export async function removeSession(repo: Repo, s: Session, force: boolean, discardBranch = false): Promise<string> {
   await tmux.killWindow(repo.tmuxSession, s.id);
   await run("git", ["worktree", "remove", ...(force ? ["--force"] : []), s.path], repo.root);
   rmSync(statusFile(repo, s.id), { force: true });
   if (!s.branch) return `removed ${s.id}`;
-  const deleted = (await tryRun("git", ["branch", "-d", s.branch], repo.root)) !== null;
+  const deleted = (await tryRun("git", ["branch", discardBranch ? "-D" : "-d", s.branch], repo.root)) !== null;
   return deleted ? `removed ${s.id} and its branch` : `removed ${s.id} (branch ${s.branch} kept: not merged)`;
 }
 

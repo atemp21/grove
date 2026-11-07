@@ -15,6 +15,8 @@ export type GroveConfig = {
   setup?: string;
   /** Extra arguments passed to `claude`. */
   claudeArgs?: string[];
+  /** Shell command that runs the tests, used to compare fan-out candidates. */
+  test?: string;
 };
 
 export type Repo = {
@@ -69,4 +71,16 @@ export function setupCommand(repo: Repo): string | undefined {
   if (has("package-lock.json")) return "npm install";
   if (has("uv.lock")) return "uv sync";
   return undefined;
+}
+
+/** The test command from config, or the package.json `test` script run with the repo's package manager. */
+export function testCommand(repo: Repo): string | undefined {
+  if (repo.config.test !== undefined) return repo.config.test || undefined;
+  const pkgPath = join(repo.root, "package.json");
+  if (!existsSync(pkgPath)) return undefined;
+  const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as { scripts?: Record<string, string> };
+  if (!pkg.scripts?.test) return undefined;
+  const install = setupCommand(repo);
+  const pm = install?.match(/^(pnpm|yarn|bun) /)?.[1] ?? "npm";
+  return pm === "bun" ? "bun run test" : `${pm} test`;
 }

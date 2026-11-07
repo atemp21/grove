@@ -10,12 +10,15 @@ grove
 | Key | Action |
 |---|---|
 | `n` | New worktree + branch (or check out an existing branch), copy env files, run setup, start Claude |
+| `f` | Fan out: start one task in 2–5 worktrees at once (`tab` changes the count) to compare the results |
+| `c` | Compare a fan-out's candidates side by side |
 | `enter` | Attach to the session (relaunches with `--continue` if Claude exited). `ctrl-b d` returns |
 | `d` | Diff against the base branch |
 | `m` | Merge the branch into the base in your main checkout |
 | `p` | Push and open a PR with `gh pr create --fill` |
 | `x` / `X` | Remove the worktree / force-remove, discarding uncommitted changes |
 | `j`/`k`, arrows | Move |
+| `t` / `w` | In compare: run the tests in every candidate / keep the selected candidate and delete the others |
 | `q` | Quit (sessions keep running in tmux) |
 
 ## How it works
@@ -38,12 +41,22 @@ Optional `.grove.json` in the repo root:
   "base": "main",
   "copy": ["**/.env*", ".claude/settings.local.json"],
   "setup": "pnpm install",
-  "claudeArgs": ["--model", "opus"]
+  "claudeArgs": ["--model", "opus"],
+  "test": "pnpm test"
 }
 ```
 
 Defaults: `base` is `origin/HEAD` or the current branch, `copy` copies gitignored `.env*` files and
-`.claude/settings.local.json`, and `setup` is guessed from the lockfile (pnpm/yarn/bun/npm/uv).
+`.claude/settings.local.json`, `setup` is guessed from the lockfile (pnpm/yarn/bun/npm/uv), and `test`
+defaults to the `package.json` test script.
+
+## Fan-out
+
+`f` asks for a task and starts Claude on it in several fresh worktrees (`<task>-a`, `-b`, …), grouped under
+the task in the list. The compare view shows each candidate's lines and files changed, commits, test result
+and conflicts, and marks the smallest change whose tests pass with ★. `w` keeps the candidate you pick and
+deletes the other worktrees and their branches. Candidates of one fan-out aren't flagged as conflicting
+with each other, since they're alternatives.
 
 ## Development
 
