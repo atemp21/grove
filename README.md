@@ -2,6 +2,20 @@
 
 A terminal dashboard for running Claude Code sessions side by side, each in its own git worktree.
 
+## Install
+
+You'll need Node 22 or later, git, [tmux](https://github.com/tmux/tmux) and
+[Claude Code](https://docs.claude.com/en/docs/claude-code). `p` (open a PR) also needs the
+[GitHub CLI](https://cli.github.com). grove runs on macOS and Linux.
+
+```
+npm install -g https://github.com/atemp21/grove/releases/latest/download/grove.tgz
+```
+
+Or from source: clone the repo, then `npm install && npm run build && npm link`.
+
+Then run it from any git repo:
+
 ```
 cd ~/dev/some-repo
 grove
@@ -81,10 +95,22 @@ and conflicts, and marks the smallest change whose tests pass with ★. `w` keep
 deletes the other worktrees and their branches. Candidates of one fan-out aren't flagged as conflicting
 with each other, since they're alternatives.
 
+## Security
+
+grove runs commands on your machine on a repo's behalf, so it asks before running anything a repo sets. See
+[Config](#config) and [SECURITY.md](SECURITY.md).
+
 ## Development
 
 ```
 npm install
 npm run build   # or npm run dev
 npm link        # puts `grove` on your PATH
+npm test
 ```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## License
+
+[MIT](LICENSE)

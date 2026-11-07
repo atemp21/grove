@@ -2,14 +2,37 @@
   "name": "grove",
   "version": "0.1.0",
   "description": "Terminal dashboard for running Claude Code sessions in git worktrees",
+  "license": "MIT",
+  "author": "Aaron Templeton (https://github.com/atemp21)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/atemp21/grove.git"
+  },
+  "homepage": "https://github.com/atemp21/grove#readme",
+  "bugs": "https://github.com/atemp21/grove/issues",
+  "keywords": [
+    "claude",
+    "claude-code",
+    "git-worktree",
+    "tmux",
+    "tui",
+    "ink",
+    "cli"
+  ],
+  "private": true,
   "type": "module",
   "bin": {
     "grove": "dist/cli.js"
   },
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "tsc && node --test \"test/*.test.mjs\"",
+    "prepack": "tsc"
   },
   "engines": {
     "node": ">=22"
@@ -22,5 +45,9 @@
     "@types/node": "^26.6.6",
     "@types/react": "^19.3.0",
     "typescript": "^7.0.2"
-  }
+  },
+  "os": [
+    "darwin",
+    "linux"
+  ]
 }

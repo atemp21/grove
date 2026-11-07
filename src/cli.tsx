@@ -20,7 +20,7 @@ if (process.argv.includes("-h") || process.argv.includes("--help")) {
 }
 
 if ((await tryRun("tmux", ["-V"])) === null) {
-  console.error("grove needs tmux: brew install tmux");
+  console.error("grove needs tmux: brew install tmux, or apt install tmux");
   process.exit(1);
 }
 
