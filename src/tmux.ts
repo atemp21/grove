@@ -21,6 +21,32 @@ export async function startWindow(opts: {
     ? ["new-window", "-d", "-t", `${exact(opts.session)}:`]
     : ["new-session", "-d", "-s", opts.session];
   await run("tmux", [...args, "-n", opts.window, "-c", opts.cwd, ...envArgs, opts.command]);
+  await styleSession(opts.session);
+}
+
+/**
+ * Replace tmux's default bright-green status bar with a quiet one that sits on
+ * the terminal's own background. Session-scoped, so the user's other tmux
+ * sessions and config are untouched.
+ */
+const STATUS_LINE = [
+  "#[align=left,bg=default]",
+  " #[fg=colour108]●#[fg=colour245] grove #[fg=colour238]│",
+  "#{W:#[fg=colour243] #W ,#[fg=colour223 bold] #W #[nobold]}",
+  "#[align=right]#[fg=colour240]ctrl-b d  back to grove ",
+].join("");
+
+const SESSION_STYLE: [string, string][] = [
+  ["status-style", "bg=default,fg=colour243"],
+  ["status-format[0]", STATUS_LINE],
+  ["message-style", "bg=colour236,fg=colour250"],
+  ["message-command-style", "bg=colour236,fg=colour250"],
+];
+
+async function styleSession(session: string): Promise<void> {
+  for (const [option, value] of SESSION_STYLE) {
+    await tryRun("tmux", ["set-option", "-t", `${exact(session)}:`, option, value]);
+  }
 }
 
 export async function killWindow(session: string, window: string): Promise<void> {
@@ -32,6 +58,7 @@ export async function killWindow(session: string, window: string): Promise<void>
  * inside tmux it switches the current client and returns immediately.
  */
 export async function attach(session: string, window: string): Promise<"blocked" | "switched"> {
+  await styleSession(session); // also restyles sessions started by older grove versions
   await run("tmux", ["select-window", "-t", exact(session, window)]);
   if (process.env.TMUX) {
     await run("tmux", ["switch-client", "-t", exact(session, window)]);
