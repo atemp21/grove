@@ -1,5 +1,5 @@
 {
-  "name": "grove",
+  "name": "claude-grove",
   "version": "0.1.0",
   "description": "Terminal dashboard for running Claude Code sessions in git worktrees",
   "license": "MIT",
@@ -19,7 +19,6 @@
     "ink",
     "cli"
   ],
-  "private": true,
   "type": "module",
   "bin": {
     "grove": "dist/cli.js"

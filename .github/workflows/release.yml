@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write # npm trusted publishing and provenance
 
 jobs:
   release:
@@ -16,10 +17,14 @@ jobs:
         with:
           node-version: 22
           cache: npm
+          registry-url: https://registry.npmjs.org
+      # Trusted publishing needs npm 11.5.1 or later; Node 22 ships npm 10.
+      - run: npm install -g npm@latest
       - run: npm ci
       - run: npm test
       # A fixed name, so the README can link to releases/latest/download/grove.tgz.
       - run: mv "$(npm pack --silent)" grove.tgz
+      - run: npm publish --provenance --access public
       - run: gh release create "$GITHUB_REF_NAME" grove.tgz --title "$GITHUB_REF_NAME" --generate-notes
         env:
           GH_TOKEN: ${{ github.token }}

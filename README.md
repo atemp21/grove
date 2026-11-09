@@ -9,7 +9,7 @@ You'll need Node 22 or later, git, [tmux](https://github.com/tmux/tmux) and
 [GitHub CLI](https://cli.github.com). grove runs on macOS and Linux.
 
 ```
-npm install -g https://github.com/atemp21/grove/releases/latest/download/grove.tgz
+npm install -g claude-grove
 ```
 
 Or from source: clone the repo, then `npm install && npm run build && npm link`.
