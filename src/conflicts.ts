@@ -20,7 +20,7 @@ const mergeCache = new Map<string, string[]>();
  * files included. Built with a throwaway index, so the worktree, its real index
  * and its refs are untouched; the commit is unreferenced and git gc drops it.
  */
-async function snapshot(path: string): Promise<Snapshot> {
+export async function snapshot(path: string): Promise<Snapshot> {
   const dir = mkdtempSync(join(tmpdir(), "grove-"));
   try {
     const index = join(dir, "index");

@@ -324,12 +324,3 @@ export function openPullRequest(s: Session): void {
   if (pushed) runInteractive("gh", ["pr", "create", "--fill", "--head", s.branch], s.path);
   pressEnterToContinue();
 }
-
-/** Show the session's changes against the base in git's pager. Takes over the terminal. */
-export async function showDiff(repo: Repo, s: Session): Promise<void> {
-  const mergeBase = await run("git", ["merge-base", repo.base, "HEAD"], s.path);
-  // git's default `less -FRX` quits instantly on short diffs, which would just flash.
-  const customPager = process.env.GIT_PAGER || (await tryRun("git", ["config", "core.pager"], s.path));
-  const pager = customPager ? [] : ["-c", "core.pager=less -R"];
-  runInteractive("git", [...pager, "diff", "--stat", "--patch", mergeBase], s.path);
-}

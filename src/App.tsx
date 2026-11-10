@@ -22,6 +22,8 @@ import {
   updatePreview,
   type PreviewResult,
 } from "./preview.js";
+import { loadDiff, markSeen, showDiff, type SessionDiff } from "./diff.js";
+import { DiffView, patchHeight, selectedIndex, shownFiles, type DiffViewState } from "./DiffView.js";
 import type { Repo } from "./repo.js";
 import {
   createSession,
@@ -31,7 +33,6 @@ import {
   openSession,
   refreshStates,
   removeSession,
-  showDiff,
   type ClaudeState,
   type Session,
 } from "./sessions.js";
@@ -41,6 +42,7 @@ type Mode =
   | { kind: "new"; text: string }
   | { kind: "fanout"; text: string; count: number }
   | { kind: "compare"; id: string; index: number }
+  | ({ kind: "diff"; back: Mode } & DiffViewState)
   | { kind: "confirm"; prompt: string; action: () => Promise<string | void>; back?: Mode };
 
 const FANOUT_COUNTS = [2, 3, 4, 5];
@@ -84,7 +86,7 @@ const Key = ({ k, label }: { k: string; label: string }) => (
 
 export function App({ repo }: { repo: Repo }) {
   const { exit, suspendTerminal } = useApp();
-  const { columns } = useWindowSize();
+  const { columns, rows } = useWindowSize();
   const [sessions, setSessions] = useState<Session[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [selected, setSelected] = useState(0);
@@ -100,6 +102,7 @@ export function App({ repo }: { repo: Repo }) {
   const [hasPreview, setHasPreview] = useState(() => previewExists(repo));
   const [picks, setPicks] = useState(() => loadPicks(repo));
   const [preview, setPreview] = useState<PreviewResult | null>(null);
+  const [diff, setDiff] = useState<{ id: string; data: SessionDiff | null; error: string | null } | null>(null);
   const refreshing = useRef(false);
   const checkingConflicts = useRef(false);
   const nextLogId = useRef(0);
@@ -218,6 +221,61 @@ export function App({ repo }: { repo: Repo }) {
     if (mode.kind === "compare" && loaded && !comparing) setMode({ kind: "list" });
   }, [mode, loaded, comparing]);
 
+  // The diff screen reloads while it's open, so an agent's edits show up as it makes them.
+  const diffId = mode.kind === "diff" ? mode.id : null;
+  const diffPath = diffId ? byId.get(diffId)?.path : undefined;
+  useEffect(() => {
+    if (!diffId || !diffPath) return;
+    let cancelled = false;
+    let inFlight = false;
+    const load = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const data = await loadDiff(repo, diffPath, diffId);
+        if (!cancelled) setDiff({ id: diffId, data, error: null });
+      } catch (e) {
+        if (!cancelled) setDiff({ id: diffId, data: null, error: (e as Error).message });
+      } finally {
+        inFlight = false;
+      }
+    };
+    void load();
+    const timer = setInterval(() => void load(), 2000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [repo, diffId, diffPath]);
+
+  // A diff screen whose session is gone falls back to where it was opened from.
+  useEffect(() => {
+    if (mode.kind === "diff" && loaded && !byId.has(mode.id)) setMode(mode.back);
+  }, [mode, loaded, byId]);
+
+  const diffData = mode.kind === "diff" && diff?.id === mode.id ? diff : null;
+
+  const openDiff = (s: Session) => {
+    setDiff(null);
+    setMode({ kind: "diff", id: s.id, file: null, scroll: 0, since: false, back: mode });
+  };
+
+  /** Leave the diff screen, remembering what was on it as the last look. */
+  const closeDiff = () => {
+    if (mode.kind !== "diff") return;
+    if (diffData?.data) markSeen(repo, mode.id, diffData.data.commit);
+    setMode(mode.back);
+  };
+
+  const attach = (s: Session) =>
+    void act(async () => {
+      const how = { value: "blocked" as "blocked" | "switched" };
+      await suspendTerminal(async () => {
+        how.value = await openSession(repo, s);
+      });
+      if (how.value === "switched") setHint(`switched to ${s.id}; switch back to this tmux window to return`);
+    });
+
   const testAll = (members: Session[]) => {
     for (const s of members) {
       setTests((t) => new Map(t).set(s.id, { status: "running" }));
@@ -284,6 +342,37 @@ export function App({ repo }: { repo: Repo }) {
     }
 
     setHint(null);
+
+    if (mode.kind === "diff") {
+      if (key.escape || key.leftArrow || input === "q" || input === "d") return closeDiff();
+      const s = byId.get(mode.id);
+      if (key.return && s) return attach(s);
+      if (input === "D" && s) return void act(() => suspendTerminal(() => showDiff(repo, s.path)));
+      const data = diffData?.data;
+      if (!data) return;
+      if (input === "s") {
+        if (!mode.since && data.since === null) return setHint("no earlier look to compare with yet");
+        return setMode({ ...mode, since: !mode.since, scroll: 0 });
+      }
+      const files = shownFiles(data, mode.since);
+      if (!files.length) return;
+      const sel = selectedIndex(files, mode.file);
+      const pick = (i: number) => setMode({ ...mode, file: files[i].path, scroll: 0 });
+      if (key.downArrow || input === "j") return pick(Math.min(files.length - 1, sel + 1));
+      if (key.upArrow || input === "k") return pick(Math.max(0, sel - 1));
+      const page = patchHeight(rows, columns, files.length);
+      const maxScroll = Math.max(0, files[sel].lines.length - page);
+      const scrollTo = (n: number) => setMode({ ...mode, file: files[sel].path, scroll: Math.max(0, Math.min(maxScroll, n)) });
+      const scroll = Math.min(mode.scroll, maxScroll);
+      if (input === "J") return scrollTo(scroll + 1);
+      if (input === "K") return scrollTo(scroll - 1);
+      if (input === " " || key.pageDown || (key.ctrl && input === "d")) return scrollTo(scroll + page - 2);
+      if (input === "b" || key.pageUp || (key.ctrl && input === "u")) return scrollTo(scroll - page + 2);
+      if (input === "g") return scrollTo(0);
+      if (input === "G") return scrollTo(maxScroll);
+      return;
+    }
+
     if (input === "q") return setExiting(true);
 
     if (mode.kind === "compare") {
@@ -342,15 +431,11 @@ export function App({ repo }: { repo: Repo }) {
     if (!target) return;
 
     if (key.return) {
-      void act(async () => {
-        const how = { value: "blocked" as "blocked" | "switched" };
-        await suspendTerminal(async () => {
-          how.value = await openSession(repo, target);
-        });
-        if (how.value === "switched") setHint(`switched to ${target.id}; switch back to this tmux window to return`);
-      });
+      attach(target);
     } else if (input === "d") {
-      void act(() => suspendTerminal(() => showDiff(repo, target)));
+      openDiff(target);
+    } else if (input === "D") {
+      void act(() => suspendTerminal(() => showDiff(repo, target.path)));
     } else if (input === "p") {
       void act(() => suspendTerminal(() => openPullRequest(target)));
     } else if (input === "m") {
@@ -558,6 +643,15 @@ export function App({ repo }: { repo: Repo }) {
 
             {!loaded ? (
               <Text dimColor>loading…</Text>
+            ) : mode.kind === "diff" ? (
+              <DiffView
+                state={mode}
+                data={diffData?.data ?? null}
+                error={diffData?.error ?? null}
+                base={repo.base}
+                rows={rows}
+                columns={columns}
+              />
             ) : compare ? (
               compare
             ) : sessions.length === 0 ? (
@@ -592,6 +686,12 @@ export function App({ repo }: { repo: Repo }) {
               <Text dimColor>working…</Text>
             ) : hint ? (
               <Text color="yellow" wrap="truncate-end">{hint}</Text>
+            ) : mode.kind === "diff" ? (
+              <Text wrap="truncate-end">
+                <Key k="j/k" label="file" />  <Key k="space/b" label="page" />  <Key k="J/K" label="line" />{"  "}
+                <Key k="s" label={mode.since ? "show everything" : "since last look"} />  <Key k="D" label="full patch" />{"  "}
+                <Key k="enter" label="attach" />  <Key k="esc" label="back" />
+              </Text>
             ) : compare ? (
               <Text wrap="truncate-end">
                 <Key k="enter" label="attach" />  <Key k="d" label="diff" />  <Key k="t" label="test all" />{"  "}

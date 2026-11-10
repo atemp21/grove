@@ -27,7 +27,8 @@ grove
 | `f` | Fan out: start one task in 2–5 worktrees at once (`tab` changes the count) to compare the results |
 | `c` | Compare a fan-out's candidates side by side |
 | `enter` | Attach to the session (relaunches with `--continue` if Claude exited). `ctrl-b d` returns |
-| `d` | Diff against the base branch |
+| `d` | Diff screen: changed files (new ones included) beside the selected file's patch, updating live. `j`/`k` file, `space`/`b` page, `J`/`K` line, `s` only what changed since your last look, `esc` back |
+| `D` | The whole patch against the base in git's pager |
 | `m` | Merge the branch into the base in your main checkout |
 | `p` | Push and open a PR with `gh pr create --fill` |
 | `x` / `X` | Remove the worktree / force-remove, discarding uncommitted changes |
