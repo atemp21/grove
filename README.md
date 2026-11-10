@@ -23,7 +23,7 @@ grove
 
 | Key | Action |
 |---|---|
-| `n` | New worktree + branch (or check out an existing branch), copy env files, run setup, start Claude |
+| `n` | New worktree + branch (or check out an existing branch), copy env files, run setup, start Claude and drop you into it |
 | `f` | Fan out: start one task in 2–5 worktrees at once (`tab` changes the count) to compare the results |
 | `c` | Compare a fan-out's candidates side by side |
 | `enter` | Attach to the session (relaunches with `--continue` if Claude exited). `ctrl-b d` returns |
@@ -38,6 +38,8 @@ grove
 | `j`/`k`, arrows | Move |
 | `t` / `w` | In compare: run the tests in every candidate / keep the selected candidate and delete the others |
 | `q` | Quit (sessions keep running in tmux) |
+| `u` | Update the base branch from its remote now. Grove also does this every 2 minutes, fast-forward only: it never merges, rebases or pushes, and leaves the base alone if it has unpushed commits or your edits are in the way |
+| `?` | Help: every key with a one-line explanation |
 
 ## How it works
 

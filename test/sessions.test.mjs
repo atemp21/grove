@@ -62,3 +62,14 @@ test("predicts conflicts between worktrees, uncommitted changes included", async
   assert.equal(found.get("three"), undefined);
   assert.equal(git(one.path, "status", "--porcelain"), "M a.txt", "the worktree is left as it was");
 });
+
+test("lists the newest worktree first", async () => {
+  const root = makeRepo(tempDir(), "ordering");
+  const r = await g.loadRepo(root);
+  const dirs = tempDir();
+  for (const id of ["older", "newer"]) {
+    git(root, "worktree", "add", "-q", "-b", id, join(dirs, id));
+    await new Promise((res) => setTimeout(res, 20));
+  }
+  assert.deepEqual((await g.listSessions(r)).map((s) => s.id), ["newer", "older"]);
+});

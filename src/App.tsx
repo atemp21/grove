@@ -23,9 +23,12 @@ import {
   type PreviewResult,
 } from "./preview.js";
 import { loadDiff, markSeen, showDiff, type SessionDiff } from "./diff.js";
+import { HelpView } from "./HelpView.js";
 import { DiffView, patchHeight, selectedIndex, shownFiles, type DiffViewState } from "./DiffView.js";
 import type { Repo } from "./repo.js";
+import { syncBase, type BaseSync } from "./sync.js";
 import {
+  attachSession,
   createSession,
   listSessions,
   mergeSession,
@@ -43,9 +46,12 @@ type Mode =
   | { kind: "fanout"; text: string; count: number }
   | { kind: "compare"; id: string; index: number }
   | ({ kind: "diff"; back: Mode } & DiffViewState)
-  | { kind: "confirm"; prompt: string; action: () => Promise<string | void>; back?: Mode };
+  | { kind: "confirm"; prompt: string; action: () => Promise<string | void>; back?: Mode }
+  | { kind: "help"; back: Mode };
 
 const FANOUT_COUNTS = [2, 3, 4, 5];
+/** How often the base branch is fetched and fast-forwarded in the background. */
+const SYNC_EVERY_MS = 2 * 60_000;
 
 /** Typed or pasted text for a one-line input: newlines become spaces, other control characters are dropped. */
 const typed = (input: string) => input.replace(/[\r\n]+/g, " ").replace(/[\x00-\x1f\x7f]/g, "");
@@ -84,12 +90,27 @@ const Key = ({ k, label }: { k: string; label: string }) => (
   </Text>
 );
 
+function SyncStatus({ sync, syncing }: { sync: BaseSync | null; syncing: boolean }) {
+  if (syncing && (!sync || sync.kind !== "error")) return <Text dimColor> · syncing…</Text>;
+  if (!sync || sync.kind === "no-upstream") return null;
+  if (sync.kind === "error") return <Text color="yellow"> · ⚠ not updated: {sync.message} (u retries)</Text>;
+  if (sync.kind === "diverged") {
+    return <Text color="yellow"> · ⚠ diverged from {sync.upstream} (↑{sync.ahead} ↓{sync.behind}), left as is</Text>;
+  }
+  return (
+    <Text dimColor>
+      {" "}· {sync.ahead > 0 ? `↑${sync.ahead} not pushed to ${sync.upstream}` : `✓ in sync with ${sync.upstream}`}
+    </Text>
+  );
+}
+
 export function App({ repo }: { repo: Repo }) {
   const { exit, suspendTerminal } = useApp();
   const { columns, rows } = useWindowSize();
   const [sessions, setSessions] = useState<Session[]>([]);
   const [loaded, setLoaded] = useState(false);
-  const [selected, setSelected] = useState(0);
+  // Selection follows a session, not a row, so new sessions appearing on top don't move it.
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [mode, setMode] = useState<Mode>({ kind: "list" });
   const [log, setLog] = useState<LogEntry[]>([]);
   const [hint, setHint] = useState<string | null>(null);
@@ -103,6 +124,9 @@ export function App({ repo }: { repo: Repo }) {
   const [picks, setPicks] = useState(() => loadPicks(repo));
   const [preview, setPreview] = useState<PreviewResult | null>(null);
   const [diff, setDiff] = useState<{ id: string; data: SessionDiff | null; error: string | null } | null>(null);
+  const [baseSync, setBaseSync] = useState<BaseSync | null>(null);
+  const [syncing, setSyncing] = useState(false);
+  const syncingRef = useRef(false);
   const refreshing = useRef(false);
   const checkingConflicts = useRef(false);
   const nextLogId = useRef(0);
@@ -119,7 +143,6 @@ export function App({ repo }: { repo: Repo }) {
       setSessions(next);
       const nextFanouts = loadFanouts(repo);
       setFanouts(nextFanouts);
-      setSelected((i) => Math.min(i, Math.max(0, next.length - 1)));
       const withPreview = previewExists(repo);
       setHasPreview(withPreview);
       setLoaded(true);
@@ -152,6 +175,36 @@ export function App({ repo }: { repo: Repo }) {
     const timer = setInterval(() => void refresh(), 2000);
     return () => clearInterval(timer);
   }, [refresh]);
+
+  /** Bring the local base up to date with its remote; `manual` reports even when nothing changed. */
+  const sync = useCallback(
+    async (manual = false) => {
+      if (syncingRef.current) return;
+      syncingRef.current = true;
+      setSyncing(true);
+      try {
+        const result = await syncBase(repo);
+        setBaseSync(result);
+        if (result.kind === "synced" && result.pulled > 0) {
+          print(`updated ${repo.base}: ${result.pulled} new commit${result.pulled === 1 ? "" : "s"} from ${result.upstream}`);
+          void refresh();
+        } else if (manual) {
+          if (result.kind === "no-upstream") setHint(`${repo.base} doesn't track a remote branch, so there's nothing to update from`);
+          else if (result.kind === "synced") setHint(`${repo.base} is up to date with ${result.upstream}`);
+        }
+      } finally {
+        syncingRef.current = false;
+        setSyncing(false);
+      }
+    },
+    [repo, print, refresh],
+  );
+
+  useEffect(() => {
+    void sync();
+    const timer = setInterval(() => void sync(), SYNC_EVERY_MS);
+    return () => clearInterval(timer);
+  }, [sync]);
 
   // Hook state changes with every tool call, so poll it faster than the git stats.
   useEffect(() => {
@@ -208,7 +261,9 @@ export function App({ repo }: { repo: Repo }) {
   const clashesOf = (id: string) =>
     (conflicts.get(id) ?? []).filter((c) => !groupOf.get(id)?.members.includes(c.with));
 
+  const selected = Math.max(0, ordered.findIndex((s) => s.id === selectedId));
   const current = ordered[selected] as Session | undefined;
+  const select = (i: number) => setSelectedId(ordered[Math.max(0, Math.min(ordered.length - 1, i))]?.id ?? null);
   // A confirm prompt raised from the compare view keeps showing it.
   const view = mode.kind === "confirm" && mode.back ? mode.back : mode;
   const comparing = view.kind === "compare" ? groups.find((g) => g.id === view.id) : undefined;
@@ -301,7 +356,19 @@ export function App({ repo }: { repo: Repo }) {
       if (key.return) {
         const branch = mode.text.trim();
         setMode({ kind: "list" });
-        if (branch) void act(async () => `created ${await createSession(repo, branch)}`);
+        if (branch) {
+          // Go straight into the new session's Claude; it's selected when you come back.
+          void act(async () => {
+            const id = await createSession(repo, branch);
+            setSelectedId(id);
+            const how = { value: "blocked" as "blocked" | "switched" };
+            await suspendTerminal(async () => {
+              how.value = await attachSession(repo, id);
+            });
+            if (how.value === "switched") setHint(`switched to ${id}; switch back to this tmux window to return`);
+            return `created ${id}`;
+          });
+        }
         return;
       }
       if (key.backspace || key.delete) return setMode({ kind: "new", text: mode.text.slice(0, -1) });
@@ -373,12 +440,18 @@ export function App({ repo }: { repo: Repo }) {
       return;
     }
 
+    if (mode.kind === "help") {
+      if (key.escape || input === "?" || input === "q") setMode(mode.back);
+      return;
+    }
+    if (input === "?") return setMode({ kind: "help", back: mode });
+
     if (input === "q") return setExiting(true);
 
     if (mode.kind === "compare") {
       if (key.escape || input === "c") {
         // Return to the list with the candidate that was being looked at still selected.
-        if (candidate) setSelected(Math.max(0, ordered.indexOf(candidate)));
+        if (candidate) setSelectedId(candidate.id);
         return setMode({ kind: "list" });
       }
       const last = candidates.length - 1;
@@ -395,11 +468,12 @@ export function App({ repo }: { repo: Repo }) {
         });
       }
     } else {
-      if (key.upArrow || input === "k") return setSelected((i) => Math.max(0, i - 1));
-      if (key.downArrow || input === "j") return setSelected((i) => Math.min(ordered.length - 1, i + 1));
+      if (key.upArrow || input === "k") return select(selected - 1);
+      if (key.downArrow || input === "j") return select(selected + 1);
       if (input === "n") return setMode({ kind: "new", text: "" });
       if (input === "f") return setMode({ kind: "fanout", text: "", count: 3 });
       if (input === "r") return void refresh();
+      if (input === "u") return void sync(true);
       if (input === "v") {
         if (!hasPreview) return void act(() => createPreview(repo, sessions, groups));
         return void act(async () => {
@@ -462,7 +536,11 @@ export function App({ repo }: { repo: Repo }) {
   const previewConflicts = new Map(preview?.conflicting.map((c) => [c.id, c.files]));
   const inPreview = (s: Session) =>
     hasPreview && wanted(picks, s.id, groupOf.get(s.id)) && !previewConflicts.has(s.id);
-  const nameWidth = Math.max(12, Math.min(40, ...sessions.map((s) => s.id.length + 2)));
+  // Names get the room the other columns leave (state, age, lines, and at least "N commits").
+  // Long names are cut in the middle, keeping both the prefix and the distinctive end visible.
+  const longestName = Math.max(0, ...sessions.map((s) => s.id.length + 2));
+  const nameWidth = Math.max(12, Math.min(longestName, columns - 4 - 13 - 5 - 18 - 12));
+  const compareNameWidth = Math.max(12, Math.min(longestName, columns - 6 - 13 - 14 - 7 - 9 - 11 - 10));
   const stateCell = (s: Session) => {
     const style = STATE_STYLE[s.running ? s.state : "stopped"];
     const icon = s.running && s.state === "busy" ? SPINNER[frame] : style.icon;
@@ -486,9 +564,11 @@ export function App({ repo }: { repo: Repo }) {
           </Text>
         )}
         <Box>
-          <Text color="green">{isSel ? "❯ " : "  "}</Text>
-          <Box width={nameWidth} flexShrink={0}>
-            <Text bold={isSel} dimColor={!isSel} wrap="truncate-end">{s.id}</Text>
+          <Box width={2} flexShrink={0}>
+            <Text color="green">{isSel ? "❯" : " "}</Text>
+          </Box>
+          <Box width={nameWidth} flexShrink={0} paddingRight={2}>
+            <Text bold={isSel} dimColor={!isSel} wrap="truncate-middle">{s.id}</Text>
           </Box>
           <Box width={13} flexShrink={0}>{stateCell(s)}</Box>
           <Box width={5} flexShrink={0}>
@@ -500,11 +580,13 @@ export function App({ repo }: { repo: Repo }) {
               {s.untracked > 0 && <Text dimColor> {s.untracked} new</Text>}
             </Text>
           </Box>
-          <Text dimColor>
-            {s.ahead} commit{s.ahead === 1 ? "" : "s"}
-            {s.dirty ? " · uncommitted" : ""}
-          </Text>
-          {inPreview(s) && <Text color="cyan"> ◧ preview</Text>}
+          <Box flexGrow={1} flexShrink={1} minWidth={0}>
+            <Text dimColor wrap="truncate-end">
+              {s.ahead} commit{s.ahead === 1 ? "" : "s"}
+              {s.dirty ? " · uncommitted" : ""}
+              {inPreview(s) && <Text color="cyan" dimColor={false}> ◧ preview</Text>}
+            </Text>
+          </Box>
         </Box>
         {activity && (
           <Box paddingLeft={4}>
@@ -546,7 +628,7 @@ export function App({ repo }: { repo: Repo }) {
         <Text italic>“{comparing.task}”</Text>
       </Text>
       <Box marginTop={1}>
-        <Box width={nameWidth + 4} flexShrink={0}><Text dimColor>  candidate</Text></Box>
+        <Box width={compareNameWidth + 4} flexShrink={0}><Text dimColor>  candidate</Text></Box>
         <Box width={13} flexShrink={0}><Text dimColor>state</Text></Box>
         <Box width={14} flexShrink={0}><Text dimColor>lines</Text></Box>
         <Box width={7} flexShrink={0}><Text dimColor>files</Text></Box>
@@ -560,9 +642,9 @@ export function App({ repo }: { repo: Repo }) {
         const clashes = clashesOf(s.id);
         return (
           <Box key={s.path}>
-            <Text color="green">{isSel ? "❯ " : "  "}</Text>
-            <Box width={nameWidth + 2} flexShrink={0}>
-              <Text bold={isSel} dimColor={!isSel} wrap="truncate-end">
+            <Box width={2} flexShrink={0}><Text color="green">{isSel ? "❯" : " "}</Text></Box>
+            <Box width={compareNameWidth + 2} flexShrink={0} paddingRight={2}>
+              <Text bold={isSel} dimColor={!isSel} wrap="truncate-middle">
                 {s.id}
                 {s === suggested && <Text color="yellow"> ★</Text>}
               </Text>
@@ -632,6 +714,7 @@ export function App({ repo }: { repo: Repo }) {
             <Text>
               <Text bold color="green">grove</Text>
               <Text dimColor> {repo.name} · base {repo.base}</Text>
+              <SyncStatus sync={baseSync} syncing={syncing} />
               {conflicted > 0 && <Text color="red">  ⚠ {conflicted} conflicting</Text>}
               {hasPreview && (
                 <Text color="cyan">
@@ -643,6 +726,8 @@ export function App({ repo }: { repo: Repo }) {
 
             {!loaded ? (
               <Text dimColor>loading…</Text>
+            ) : mode.kind === "help" ? (
+              <HelpView />
             ) : mode.kind === "diff" ? (
               <DiffView
                 state={mode}
@@ -686,6 +771,10 @@ export function App({ repo }: { repo: Repo }) {
               <Text dimColor>working…</Text>
             ) : hint ? (
               <Text color="yellow" wrap="truncate-end">{hint}</Text>
+            ) : mode.kind === "help" ? (
+              <Text>
+                <Key k="esc" label="close" />
+              </Text>
             ) : mode.kind === "diff" ? (
               <Text wrap="truncate-end">
                 <Key k="j/k" label="file" />  <Key k="space/b" label="page" />  <Key k="J/K" label="line" />{"  "}
@@ -695,16 +784,14 @@ export function App({ repo }: { repo: Repo }) {
             ) : compare ? (
               <Text wrap="truncate-end">
                 <Key k="enter" label="attach" />  <Key k="d" label="diff" />  <Key k="t" label="test all" />{"  "}
-                <Key k="w" label="keep this one" />  <Key k="esc" label="back" />
+                <Key k="w" label="keep this one" />  <Key k="?" label="more" />  <Key k="esc" label="back" />
               </Text>
             ) : (
               <Text wrap="truncate-end">
-                <Key k="n" label="new" />  <Key k="f" label="fan out" />  <Key k="enter" label="attach" />{"  "}
-                <Key k="d" label="diff" />  <Key k="m" label="merge" />  <Key k="p" label="PR" />{"  "}
-                <Key k="x" label="remove" />  <Key k="v" label="preview" />{"  "}
-                {hasPreview && <><Key k="space" label="in/out" />{"  "}<Key k="V" label="drop preview" />{"  "}</>}
-                <Key k="q" label="quit" />
-                {!process.env.TMUX && <Text dimColor>  · ctrl-b d returns from a session</Text>}
+                <Key k="n" label="new" />  <Key k="enter" label="attach" />  <Key k="d" label="diff" />{"  "}
+                <Key k="m" label="merge" />  <Key k="x" label="remove" />{"  "}
+                {hasPreview && <><Key k="space" label="in/out of preview" />{"  "}</>}
+                <Key k="?" label="more" />  <Key k="q" label="quit" />
               </Text>
             )}
           </Box>

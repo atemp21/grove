@@ -20,13 +20,14 @@ export const tempDir = () => realpathSync(mkdtempSync(join(tmpdir(), "grove-test
  */
 export async function loadGrove() {
   process.env.GROVE_HOME = join(tempDir(), "home");
-  const [repo, sessions, conflicts, diff] = await Promise.all([
+  const [repo, sessions, conflicts, diff, sync] = await Promise.all([
     import("../dist/repo.js"),
     import("../dist/sessions.js"),
     import("../dist/conflicts.js"),
     import("../dist/diff.js"),
+    import("../dist/sync.js"),
   ]);
-  return { home: process.env.GROVE_HOME, ...repo, ...sessions, ...conflicts, ...diff };
+  return { home: process.env.GROVE_HOME, ...repo, ...sessions, ...conflicts, ...diff, ...sync };
 }
 
 export const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();

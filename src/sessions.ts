@@ -23,6 +23,8 @@ export type Session = {
   files: string[];
   ahead: number;
   dirty: boolean;
+  /** When the worktree was created, for listing the newest first. */
+  created: number;
 };
 
 const STATUS_DIR = join(GROVE_HOME, "status");
@@ -82,6 +84,19 @@ async function listWorktrees(repo: Repo): Promise<Worktree[]> {
 }
 
 const idFor = (wt: Worktree) => slug(wt.branch ?? basename(wt.path));
+
+/**
+ * When a worktree was made: git writes its `.git` file once, at `worktree add`.
+ * Birth time where the filesystem has one; otherwise that file's mtime.
+ */
+function createdAt(path: string): number {
+  try {
+    const st = statSync(join(path, ".git"));
+    return st.birthtimeMs || st.mtimeMs;
+  } catch {
+    return 0;
+  }
+}
 
 /** Read the start of a file; hook payloads with large tool inputs can be big. */
 function readHead(file: string, bytes = 16384): string {
@@ -205,9 +220,10 @@ async function changeStats(repo: Repo, path: string) {
   };
 }
 
+/** Every session in the repo, newest first. */
 export async function listSessions(repo: Repo): Promise<Session[]> {
   const [trees, windows] = await Promise.all([listWorktrees(repo), tmux.listWindows(repo.tmuxSession)]);
-  return Promise.all(
+  const sessions = await Promise.all(
     trees.map(async (wt) => {
       const id = idFor(wt);
       const { state, since, activity } = readState(repo, id);
@@ -220,9 +236,11 @@ export async function listSessions(repo: Repo): Promise<Session[]> {
         stateSince: since,
         activity,
         ...(await changeStats(repo, wt.path)),
+        created: createdAt(wt.path),
       };
     }),
   );
+  return sessions.sort((a, b) => b.created - a.created || a.id.localeCompare(b.id));
 }
 
 async function startClaude(repo: Repo, id: string, cwd: string, firstRun: boolean, prompt?: string): Promise<void> {
@@ -279,6 +297,9 @@ export async function createSession(repo: Repo, branch: string, prompt?: string)
   await startClaude(repo, id, path, true, prompt);
   return id;
 }
+
+/** Attach to a session's tmux window as it is, e.g. right after creating it. */
+export const attachSession = (repo: Repo, id: string) => tmux.attach(repo.tmuxSession, id);
 
 /** Attach to a session's tmux window, relaunching Claude first if it has exited. */
 export async function openSession(repo: Repo, s: Session) {
