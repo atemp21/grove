@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.2
 
 - `d` opens a diff screen: the changed files beside the selected file's patch, refreshing while the agent works.
   Files that changed since you last looked are marked `●`, and `s` shows only those changes
